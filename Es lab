@@ -14,7 +14,7 @@
 // ADC and Threshold Constants
 #define refVtg      3.3         // LPC1768 ADC Reference Voltage (VCC)
 #define digitalMax  4095.0      // 12-bit ADC Resolution
-#define ALCOHOL_THRESHOLD_PPM 200 // Threshold for LED ON (Example value)
+#define ALCOHOL_THRESHOLD_PPM 5000 // Threshold for LED ON (Example value)
 
 // LCD Messages
 char msg1[] = "Alc PPM: ";
