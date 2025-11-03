@@ -1,0 +1,190 @@
+#include <lpc17xx.h>
+#include <stdio.h>
+#include <math.h>
+
+// --- DEFINES ---
+// Pins for 16x2 LCD in 4-bit mode
+#define RS_CTRL     (1 << 8)    // P0.8
+#define EN_CTRL     (1 << 9)    // P0.9
+#define DT_CTRL     (0xF << 4)  // P0.4 to P0.7 for D4-D7 (P0.4, P0.5, P0.6, P0.7)
+
+// Alert LED Pin (Replaces Buzzer)
+#define ALERT_LED   (1 << 22)   // P0.22 (Used for audible alerts in the synopsis [cite: 22])
+
+// ADC and Threshold Constants
+#define refVtg      3.3         // LPC1768 ADC Reference Voltage (VCC)
+#define digitalMax  4095.0      // 12-bit ADC Resolution
+#define ALCOHOL_THRESHOLD_PPM 200 // Threshold for LED ON (Example value)
+
+// LCD Messages
+char msg1[] = "Alc PPM: ";
+char msg2[] = "Status: ";
+
+// LCD Initialization Command Sequence (Standard 4-bit initialization)
+unsigned long int init_command[] = {0x30, 0x30, 0x30, 0x20, 0x28, 0x0C, 0x06, 0x01, 0x80};
+
+// --- GLOBAL VARIABLES ---
+unsigned int temp1, i, flag1, flag2;
+unsigned int temp2; // Used for nibble data in LCD
+
+// --- FUNCTION PROTOTYPES ---
+void delay(unsigned int);
+void lcd_init(void);
+void lcd_write(void);
+void port_write(void);
+void lcd_print_msg(char *message);
+void lcd_goto_line2_start(void);
+int map_adc_to_ppm(unsigned int adc_val);
+
+// --- MAIN FUNCTION ---
+int main(void) {
+    unsigned int mqReading;
+    int ppm;
+    char ppmStr[16], statusStr[16];
+
+    SystemInit();
+    SystemCoreClockUpdate();
+
+    // 1. ADC Initialization (AD0.0 on P0.23 for MQ-3 Analog Output [cite: 9, 11])
+    LPC_SC->PCONP |= (1 << 12);               // Enable ADC power (PCADC bit 12)
+    LPC_PINCON->PINSEL1 &= ~(3 << 14);        // Clear P0.23 bits 14 & 15
+    LPC_PINCON->PINSEL1 |= (1 << 14);         // Set P0.23 to AD0.0 function (01)
+    
+    // Select AD0.0 (bit 0), CLKDIV=4 (bits 8-15), ADC enable (bit 21)
+    // CLKDIV=4 results in ADC clock of approx CCLK/20 (assuming PCLK is CCLK/4)
+    LPC_ADC->ADCR = (1 << 0) | (4 << 8) | (1 << 21); 
+
+    // 2. GPIO Initialization (LCD & Alert LED)
+    LPC_GPIO0->FIODIR |= RS_CTRL | EN_CTRL | DT_CTRL | ALERT_LED; // Set all as OUTPUT
+
+    // 3. LCD Initialization and Setup
+    lcd_init();
+    lcd_print_msg(msg1);
+    lcd_goto_line2_start(); // Move to Line 2 start
+    lcd_print_msg(msg2);
+
+    // 4. Main Loop
+    while (1) {
+        // a. Start ADC conversion on AD0.0
+        LPC_ADC->ADCR |= (1 << 24);                      // Set START bit (001) for conversion now
+        while (!(LPC_ADC->ADGDR & (1 << 31)));          // Wait for conversion completion (DONE bit)
+        
+        // b. Read 12-bit ADC result (bits 4-15)
+        mqReading = (LPC_ADC->ADGDR >> 4) & 0xFFF;
+        
+        // c. Process data: Convert ADC reading to PPM
+        ppm = map_adc_to_ppm(mqReading);
+        
+        // d. Prepare status string
+        if (ppm > ALCOHOL_THRESHOLD_PPM) {
+            sprintf(statusStr, "HIGH ALERT! ");
+        } else {
+            sprintf(statusStr, "SAFE        ");
+        }
+
+        // e. Convert PPM value to string for display
+        sprintf(ppmStr, "%4d", ppm); // 4 digits, right justified
+
+        // f. Display PPM (at position 0x88, after "Alc PPM: ")
+        temp1 = 0x88; 
+        flag1 = 0; // Command mode
+        lcd_write();
+        delay(500);
+        flag1 = 1; // Data mode
+        lcd_print_msg(ppmStr);
+        lcd_print_msg("PPM "); // Add unit and clear space
+
+        // g. Display Status (at position 0xC8, after "Status: ")
+        temp1 = 0xC8; 
+        flag1 = 0; // Command mode
+        lcd_write();
+        delay(500);
+        flag1 = 1; // Data mode
+        lcd_print_msg(statusStr);
+        
+        // h. LED Control (Alert Mechanism)
+        if (ppm > ALCOHOL_THRESHOLD_PPM) {
+            LPC_GPIO0->FIOSET = ALERT_LED; // Turn LED ON
+        } else {
+            LPC_GPIO0->FIOCLR = ALERT_LED; // Turn LED OFF
+        }
+
+        // Delay for sampling period (approx 1 second)
+        delay(1000000); 
+    }
+}
+
+// --- FUNCTION DEFINITIONS ---
+
+/**
+ * @brief Placeholder function to map 12-bit ADC value to Alcohol PPM.
+ * @note IMPORTANT: This is a linear placeholder. The MQ-3 sensor has a logarithmic 
+ * response (Rs/R0 vs. PPM). For a real project, this MUST be replaced with the 
+ * logarithmic formula using calibration constants from the MQ-3 datasheet.
+ * @param adc_val The 12-bit ADC reading (0-4095).
+ * @return Estimated PPM value.
+ */
+int map_adc_to_ppm(unsigned int adc_val) {
+    // Linear Scaling (Example: maps 0-4095 to 0-4000 PPM)
+    // The higher the concentration, the lower the resistance, and higher the ADC reading.
+    return (adc_val * 4000) / 4095; 
+}
+
+
+// --- LCD DRIVER FUNCTIONS (Same as standard 4-bit LCD driver) ---
+
+void delay(unsigned int r1) {
+    volatile unsigned int r;
+    for (r = 0; r < r1; r++);
+}
+
+void lcd_init(void) {
+    flag1 = 0; 
+    for (i = 0; i < 9; i++) {
+        temp1 = init_command[i];
+        lcd_write();
+        delay(30000);
+    }
+    flag1 = 1; 
+}
+
+void lcd_write(void) {
+    flag2 = (flag1 == 0) && ((temp1 == 0x30) || (temp1 == 0x20)); 
+    temp2 = temp1 >> 4;
+    port_write();
+    if (!flag2) {
+        temp2 = temp1 & 0x0F;
+        port_write();
+    }
+}
+
+void port_write(void) {
+    LPC_GPIO0->FIOCLR = DT_CTRL;
+    LPC_GPIO0->FIOSET = (temp2 << 4) & DT_CTRL;
+    
+    if (flag1 == 0)
+        LPC_GPIO0->FIOCLR = RS_CTRL; // Command mode (RS=0)
+    else
+        LPC_GPIO0->FIOSET = RS_CTRL; // Data mode (RS=1)
+
+    LPC_GPIO0->FIOSET = EN_CTRL;
+    delay(50);
+    LPC_GPIO0->FIOCLR = EN_CTRL;
+    delay(1000); 
+}
+
+void lcd_print_msg(char *message) {
+    flag1 = 1; 
+    for (i = 0; message[i] != '\0'; i++) {
+        temp1 = message[i];
+        lcd_write();
+    }
+}
+
+void lcd_goto_line2_start(void) {
+    temp1 = 0xC0; // Force cursor to line 2, start
+    flag1 = 0; 
+    lcd_write();
+    delay(800);
+    flag1 = 1; 
+}
